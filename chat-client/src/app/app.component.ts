@@ -46,10 +46,8 @@ export class AppComponent {
   private typingTimeout?: any;
 
   constructor(private crypto: CryptoService) {
-    // Verbindung zum Server (Fallbacks erlaubt)
     this.socket = io('http://localhost:4000');
 
-    // Server-„Hallo“ (nur Test)
     this.socket.on('hello', (msg) => console.log('SERVER:', msg));
 
     // Live eingehende Nachrichten (mit Entschlüsselung)
@@ -89,25 +87,25 @@ export class AppComponent {
       }
     });
 
-    // Debug optional
-    (window as any).socket = this.socket;
+    (window as any).socket = this.socket; // optional debug
   }
 
-  // ---------- UI helpers ----------
+  // ---------- helpers ----------
+  private norm(s: string) { return (s || '').trim().toLowerCase(); }
+
   private scrollToBottom() {
     setTimeout(() => this.content?.scrollToBottom(300), 50);
   }
 
-  onFocus() { this.emitTyping(); }
-  onBlur()  { this.isTyping = false; }
+  onFocus(){ this.emitTyping(); }
+  onBlur(){ this.isTyping = false; }
 
   emitTyping() {
     if (!this.joined || !this.room) return;
     this.socket.emit('typing', { room: this.room, from: this.me });
   }
 
-  // ---------- Server helpers ----------
-  private async fetchPeerKey(username: string, tries = 10, delayMs = 1000): Promise<string | undefined> {
+  private async fetchPeerKey(username: string, tries = 6, delayMs = 500): Promise<string | undefined> {
     for (let i = 0; i < tries; i++) {
       const r = await fetch(`http://localhost:4000/user/${encodeURIComponent(username)}`);
       if (r.ok) return (await r.json()).publicKey as string;
@@ -116,15 +114,17 @@ export class AppComponent {
     return undefined;
   }
 
-  // ---------- Actions ----------
+  // ---------- actions ----------
   async join() {
     if (!this.me || !this.peer) return;
+
+    this.me   = this.norm(this.me);
+    this.peer = this.norm(this.peer);
 
     await this.crypto.init();
     this.feed = [];
     this.room = [this.me, this.peer].sort().join('|');
 
-    // Room & Präsenz
     this.socket.emit('room:join', this.room);
     this.socket.emit('presence:online', { user: this.me });
 
@@ -135,9 +135,9 @@ export class AppComponent {
       body: JSON.stringify({ username: this.me, publicKey: this.crypto.me!.pub })
     });
 
-    // Peer-Key (mit kleinem Retry)
+    // Peer-Key schnell holen (ohne langes Blockieren)
     this.peerPub = await this.fetchPeerKey(this.peer);
-    if (!this.peerPub) console.warn('Kein Public Key für', this.peer, 'gefunden.');
+    if (!this.peerPub) console.warn('Peer-Key fehlt noch. Peer joinen lassen.');
 
     // Verlauf laden & passend entschlüsseln
     const resp = await fetch(`http://localhost:4000/history/${encodeURIComponent(this.room)}`);
@@ -169,9 +169,18 @@ export class AppComponent {
 
   async send() {
     const text = this.msg.trim();
-    if (!text || !this.room || !this.peerPub) return;
+    if (!text || !this.room) return;
 
-    // Dual-Cipher: für Peer + für mich selbst
+    // On-demand Peer-Key nachladen, wenn nötig
+    if (!this.peerPub) {
+      this.peerPub = await this.fetchPeerKey(this.peer, 3, 400);
+      if (!this.peerPub) {
+        console.warn('Kann nicht senden: Peer-Key fehlt noch.');
+        return;
+      }
+    }
+
+    // Dual-Cipher
     const cipherTo   = await this.crypto.encryptFor(this.peerPub, text);
     const cipherFrom = await this.crypto.encryptFor(this.crypto.me!.pub, text);
 
@@ -186,6 +195,6 @@ export class AppComponent {
     });
 
     this.msg = '';
-    this.emitTyping(); // kurzer Ping, fühlt sich „live“ an
+    this.emitTyping();
   }
 }

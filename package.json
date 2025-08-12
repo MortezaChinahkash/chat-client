@@ -1,5 +1,6 @@
 {
   "dependencies": {
+    "ionicons": "^8.0.13",
     "libsodium-wrappers-sumo": "^0.7.15"
   }
 }
