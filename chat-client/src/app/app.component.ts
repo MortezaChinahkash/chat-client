@@ -31,4 +31,15 @@ export class AppComponent {
     (window as any).makeRoom = this.makeRoom.bind(this);
 
   }
+  join() {
+    this.room = [this.me, this.peer].sort().join('|');
+    this.socket.emit('room:join', this.room);
+  }
+  
+  send() {
+    const text = this.msg.trim();
+    if (!text || !this.room) return;
+    this.socket.emit('chat:send', { room: this.room, from: this.me, to: this.peer, text });
+    this.msg = '';
+  }
 }
