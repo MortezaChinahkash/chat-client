@@ -3,6 +3,7 @@ import { Component } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { IonApp, IonRouterOutlet } from '@ionic/angular/standalone';
 import { io, Socket } from 'socket.io-client';
+import { CryptoService } from './crypto.service';
 
 @Component({
   selector: 'app-root',
@@ -18,19 +19,31 @@ export class AppComponent {
   msg = '';
   room = '';
   feed: Array<{ from: string; text: string; ts: number }> = [];
+  peerPub?: string;
 
-  constructor() {
-    // Verbindung zum Server
-    this.socket = io('http://localhost:4000', { transports: ['websocket'] });
+  constructor(private crypto: CryptoService) {
+    this.socket = io('http://localhost:4000');
+    this.crypto.init();
 
     // Begrüßung (Test)
     this.socket.on('hello', (msg) => console.log('SERVER SAGT:', msg));
 
-    // Eingehende Nachrichten live verarbeiten
-    this.socket.on('chat:recv', (msg) => {
-      console.log('Empfangen:', msg);
-      if (msg.room === this.room) {
-        this.feed = [...this.feed, { from: msg.from, text: msg.text, ts: msg.ts }];
+    // Eingehende Nachrichten verarbeiten (mit Entschlüsselung, falls encrypted)
+    this.socket.on('chat:recv', async (msg: any) => {
+      try {
+        if (msg.room !== this.room) return;
+
+        let shown = msg.text;
+
+        // Falls als verschlüsselt markiert, entschlüsseln
+        if (msg.encrypted) {
+          shown = await this.crypto.decryptFromMe('', msg.text);
+        }
+
+        this.feed.push({ from: msg.from, text: shown, ts: msg.ts });
+      } catch (e) {
+        // Falls Entschlüsselung fehlschlägt
+        this.feed.push({ from: msg.from, text: '[encrypted]', ts: msg.ts });
       }
     });
 
@@ -44,32 +57,42 @@ export class AppComponent {
   }
 
   async join() {
-    this.feed = []; // alten Verlauf leeren
+    this.feed = [];
     this.room = this.makeRoom(this.me, this.peer);
     this.socket.emit('room:join', this.room);
 
-    // Verlauf vom Server holen
-    try {
-      const resp = await fetch(`http://localhost:4000/history/${encodeURIComponent(this.room)}`);
-      const arr = await resp.json();
-      this.feed = arr.map((m: any) => ({ from: m.from, text: m.text, ts: m.ts }));
-    } catch (err) {
-      console.error('Fehler beim Laden des Verlaufs:', err);
-      this.feed = [];
-    }
+    // 1) meinen PublicKey hochladen
+    await fetch('http://localhost:4000/user/upsert', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: this.me, publicKey: this.crypto.me!.pub })
+    });
+
+    // 2) Peer-PublicKey holen
+    const r = await fetch(`http://localhost:4000/user/${encodeURIComponent(this.peer)}`);
+    this.peerPub = r.ok ? (await r.json()).publicKey as string : undefined;
+
+    // 3) Verlauf laden (noch unverschlüsselt oder verschlüsselt, je nach Sender)
+    const resp = await fetch(`http://localhost:4000/history/${encodeURIComponent(this.room)}`);
+    const arr = await resp.json();
+    this.feed = arr.map((m: any) => ({ from: m.from, text: m.text, ts: m.ts }));
   }
 
-  send() {
+  async send() {
     const text = this.msg.trim();
-    if (!text || !this.room) return;
+    if (!text || !this.room || !this.peerPub) return;
+
+    // Nachricht verschlüsseln
+    const cipher = await this.crypto.encryptFor(this.peerPub, text);
+
     this.socket.emit('chat:send', {
       room: this.room,
       from: this.me,
       to: this.peer,
-      text,
-      ts: Date.now(),
+      text: cipher,
+      encrypted: true
     });
-    this.feed = [...this.feed, { from: this.me, text, ts: Date.now() }];
+
     this.msg = '';
   }
 }
