@@ -1,3 +1,27 @@
-<ion-app>
-  <ion-router-outlet></ion-router-outlet>
-</ion-app>
+<div style="max-width:600px;margin:16px auto;padding:12px;border:1px solid #ddd;border-radius:12px">
+  <h3>Mini-Chat Debug</h3>
+
+  <div style="display:flex; gap:8px; margin-bottom:8px;">
+    <label style="flex:1">Ich:
+      <input [(ngModel)]="me" placeholder="alice" style="width:100%">
+    </label>
+    <label style="flex:1">Kontakt:
+      <input [(ngModel)]="peer" placeholder="bob" style="width:100%">
+    </label>
+    <button (click)="join()">Room join</button>
+  </div>
+
+  <div style="margin:8px 0; font-size:12px; color:#666">Room: {{ room || '—' }}</div>
+
+  <div style="border:1px solid #eee; padding:8px; height:200px; overflow:auto; margin-bottom:8px;">
+    <div *ngFor="let m of feed">
+      <b>{{ m.from }}:</b> {{ m.text }} <small>({{ m.ts }})</small>
+    </div>
+  </div>
+
+  <div style="display:flex; gap:8px;">
+    <input [(ngModel)]="msg" placeholder="Nachricht…" (keyup.enter)="send()" style="flex:1">
+    <button (click)="send()">Senden</button>
+  </div>
+</div>
+
