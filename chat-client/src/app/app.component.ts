@@ -1,14 +1,15 @@
 import { CommonModule } from '@angular/common';
-import { Component, ViewChild } from '@angular/core';
+import { Component, OnInit } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import {
-  IonApp, IonRouterOutlet, IonContent,
-  IonHeader, IonToolbar, IonTitle,
-  IonFooter, IonButtons, IonButton, IonInput,
-  IonItem, IonIcon
+  IonApp, IonHeader, IonToolbar, IonTitle, IonContent,
+  IonButton, IonInput, IonItem, IonLabel
 } from '@ionic/angular/standalone';
 import { io, Socket } from 'socket.io-client';
-import { CryptoService } from './crypto.service';
+
+type ChatMsg = { room: string; from: string; to: string; text: string; ts: number };
+
+const API = 'http://localhost:4000';
 
 @Component({
   selector: 'app-root',
@@ -16,185 +17,205 @@ import { CryptoService } from './crypto.service';
   templateUrl: 'app.component.html',
   styleUrls: ['app.component.scss'],
   imports: [
-    // Ionic
-    IonApp, IonRouterOutlet, IonContent,
-    IonHeader, IonToolbar, IonTitle,
-    IonFooter, IonButtons, IonButton, IonInput,
-    IonItem, IonIcon,
-    // Angular
+    IonApp, IonHeader, IonToolbar, IonTitle, IonContent,
+    IonButton, IonInput, IonItem, IonLabel,
     FormsModule, CommonModule
-  ],
+  ]
 })
-export class AppComponent {
-  @ViewChild(IonContent) content!: IonContent;
+export class AppComponent implements OnInit {
+  // Auth/UI
+  registerMode = false;
+  loggedIn = false;
+  loading = false;
+  error = '';
 
-  // Socket & state
+  // Credentials
+  me = '';                 // auch im Login-Form genutzt
+  password = '';
+  token: string | null = localStorage.getItem('token');
+
+  // Chat
   socket!: Socket;
-  joined = false;
-
-  me = '';
   peer = '';
-  peerPub?: string;
   room = '';
-
   msg = '';
-  feed: Array<{ from: string; text: string; ts: number }> = [];
+  feed: ChatMsg[] = [];
 
-  // UI-Extras
-  peerOnline = false;
-  isTyping = false;
-  private typingTimeout?: any;
+  ngOnInit() {
+    // Für Debug aus der Browserkonsole:
+    (window as any).app = this;
 
-  constructor(private crypto: CryptoService) {
-    this.socket = io('http://localhost:4000');
-
-    this.socket.on('hello', (msg) => console.log('SERVER:', msg));
-
-    // Live eingehende Nachrichten (mit Entschlüsselung)
-    this.socket.on('chat:recv', async (msg: any) => {
-      if (msg.room !== this.room) return;
-
-      let shown = msg.text; // Fallback für Altformat
-      try {
-        if (msg.encrypted) {
-          if (msg.to === this.me && msg.cipherTo) {
-            shown = await this.crypto.decryptFromMe('', msg.cipherTo);
-          } else if (msg.from === this.me && msg.cipherFrom) {
-            shown = await this.crypto.decryptFromMe('', msg.cipherFrom);
-          } else if (msg.text) {
-            try { shown = await this.crypto.decryptFromMe('', msg.text); } catch {}
-          }
-        }
-      } catch {
-        shown = '[encrypted]';
-      }
-
-      this.feed.push({ from: msg.from, text: shown, ts: msg.ts });
-      this.scrollToBottom();
-    });
-
-    // Präsenz-Updates
-    this.socket.on('presence:update', (data: any) => {
-      if (data?.user === this.peer) this.peerOnline = !!data.online;
-    });
-
-    // Typing-Indikator
-    this.socket.on('typing', (data: any) => {
-      if (data?.from === this.peer && data.room === this.room) {
-        this.isTyping = true;
-        clearTimeout(this.typingTimeout);
-        this.typingTimeout = setTimeout(() => (this.isTyping = false), 1200);
-      }
-    });
-
-    (window as any).socket = this.socket; // optional debug
+    // Auto-Login falls vorhanden
+    const savedUser = localStorage.getItem('me');
+    if (this.token && savedUser) {
+      this.me = savedUser;
+      this.loggedIn = true;
+      this.connectSocket();
+    }
   }
 
-  // ---------- helpers ----------
+  // ---------- Helpers ----------
   private norm(s: string) { return (s || '').trim().toLowerCase(); }
 
-  private scrollToBottom() {
-    setTimeout(() => this.content?.scrollToBottom(300), 50);
-  }
-
-  onFocus(){ this.emitTyping(); }
-  onBlur(){ this.isTyping = false; }
-
-  emitTyping() {
-    if (!this.joined || !this.room) return;
-    this.socket.emit('typing', { room: this.room, from: this.me });
-  }
-
-  private async fetchPeerKey(username: string, tries = 6, delayMs = 500): Promise<string | undefined> {
-    for (let i = 0; i < tries; i++) {
-      const r = await fetch(`http://localhost:4000/user/${encodeURIComponent(username)}`);
-      if (r.ok) return (await r.json()).publicKey as string;
-      await new Promise(res => setTimeout(res, delayMs));
+  // ---------- Auth ----------
+  async register() {
+    this.error = '';
+    if (!this.me || !this.password) {
+      this.error = 'Bitte Benutzername und Passwort eingeben.';
+      return;
     }
-    return undefined;
+    this.loading = true;
+    try {
+      const uname = this.norm(this.me);
+      const resp = await fetch(`${API}/auth/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username: uname,
+          password: this.password,
+          publicKey: 'PUBKEY_PLACEHOLDER' // E2E kommt später wieder dazu
+        })
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data?.error || 'Registrierung fehlgeschlagen');
+      this.registerMode = false; // zurück zum Login
+      console.log('[AUTH] registered:', uname);
+    } catch (e: any) {
+      this.error = e?.message || String(e);
+      console.warn('[AUTH] register error:', e);
+    } finally {
+      this.loading = false;
+    }
   }
 
-  // ---------- actions ----------
-  async join() {
-    if (!this.me || !this.peer) return;
+  async login() {
+    this.error = '';
+    if (!this.me || !this.password) {
+      this.error = 'Bitte Benutzername und Passwort eingeben.';
+      return;
+    }
+    this.loading = true;
+    try {
+      const uname = this.norm(this.me);
+      const resp = await fetch(`${API}/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: uname, password: this.password })
+      });
+      const data = await resp.json();
+      if (!resp.ok || !data?.token) throw new Error(data?.error || 'Login fehlgeschlagen');
 
-    this.me   = this.norm(this.me);
-    this.peer = this.norm(this.peer);
+      this.me = uname;
+      this.token = data.token as string;
+      localStorage.setItem('token', this.token);
+      localStorage.setItem('me', this.me);
 
-    await this.crypto.init();
+      this.loggedIn = true;
+      console.log('[AUTH] logged in as:', this.me);
+      this.connectSocket();
+    } catch (e: any) {
+      this.error = e?.message || String(e);
+      console.warn('[AUTH] login error:', e);
+    } finally {
+      this.loading = false;
+    }
+  }
+
+  logout() {
+    this.loggedIn = false;
+    this.token = null;
+    localStorage.removeItem('token');
+    localStorage.removeItem('me');
+    try { this.socket?.disconnect(); } catch {}
     this.feed = [];
-    this.room = [this.me, this.peer].sort().join('|');
+    this.room = '';
+    this.peer = '';
+    this.msg = '';
+    console.log('[AUTH] logged out');
+  }
 
-    this.socket.emit('room:join', this.room);
-    this.socket.emit('presence:online', { user: this.me });
-
-    // eigenen Public Key hochladen
-    await fetch('http://localhost:4000/user/upsert', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: this.me, publicKey: this.crypto.me!.pub })
+  // ---------- Socket / Chat ----------
+  private connectSocket() {
+    this.socket = io(API, {
+      auth: { token: this.token ?? '' }, // Fix gegen TS2345 + leeres Token
+      transports: ['websocket'],
+      reconnection: true,
+      reconnectionAttempts: 10,
+      reconnectionDelay: 500
     });
 
-    // Peer-Key schnell holen (ohne langes Blockieren)
-    this.peerPub = await this.fetchPeerKey(this.peer);
-    if (!this.peerPub) console.warn('Peer-Key fehlt noch. Peer joinen lassen.');
+    (window as any).socket = this.socket; // Debug
 
-    // Verlauf laden & passend entschlüsseln
-    const resp = await fetch(`http://localhost:4000/history/${encodeURIComponent(this.room)}`);
-    const arr: any[] = await resp.json();
+    this.socket.on('connect', () => {
+      this.error = '';
+      console.log('[SOCKET] connected, id=', this.socket.id);
+    });
 
-    const out: Array<{ from: string; text: string; ts: number }> = [];
-    for (const m of arr) {
-      let shown = m.text;
-      try {
-        if (m.encrypted) {
-          if (m.to === this.me && m.cipherTo) {
-            shown = await this.crypto.decryptFromMe('', m.cipherTo);
-          } else if (m.from === this.me && m.cipherFrom) {
-            shown = await this.crypto.decryptFromMe('', m.cipherFrom);
-          } else if (m.text) {
-            try { shown = await this.crypto.decryptFromMe('', m.text); } catch {}
-          }
-        }
-      } catch {
-        shown = '[encrypted]';
-      }
-      out.push({ from: m.from, text: shown, ts: m.ts });
-    }
+    this.socket.on('connect_error', (err: any) => {
+      console.warn('[SOCKET] connect_error:', err?.message || err);
+      this.error = 'Server nicht erreichbar oder Token ungültig.';
+    });
 
-    this.feed = out;
-    this.joined = true;
-    this.scrollToBottom();
+    this.socket.on('chat:recv', (msg: ChatMsg) => {
+      console.log('[RECV] <-', msg);
+      if (msg.room === this.room) this.feed.push(msg);
+    });
   }
 
-  async send() {
-    const text = this.msg.trim();
-    if (!text || !this.room) return;
+  async join() {
+    this.error = '';
+    const me = this.norm(this.me);
+    const peerTrim = this.norm(this.peer);
+    if (!this.loggedIn || !peerTrim) {
+      this.error = 'Bitte eingeloggt sein und einen Chat-Partner eingeben.';
+      return;
+    }
+    this.me = me;
+    this.peer = peerTrim;
 
-    // On-demand Peer-Key nachladen, wenn nötig
-    if (!this.peerPub) {
-      this.peerPub = await this.fetchPeerKey(this.peer, 3, 400);
-      if (!this.peerPub) {
-        console.warn('Kann nicht senden: Peer-Key fehlt noch.');
-        return;
+    this.room = [this.me, this.peer].sort().join('|');
+    (window as any).room = this.room; // Debug: in Konsole `room` prüfen
+    console.log('[JOIN] -> me:', this.me, 'peer:', this.peer, 'room:', this.room);
+
+    this.feed = [];
+    this.socket.emit('room:join', this.room);
+
+    try {
+      const resp = await fetch(`${API}/history/${encodeURIComponent(this.room)}`);
+      if (resp.ok) {
+        const arr = await resp.json();
+        this.feed = Array.isArray(arr) ? arr : [];
       }
+    } catch (e) {
+      console.warn('[JOIN] history fetch failed', e);
+    }
+  }
+
+  send() {
+    this.error = '';
+    const text = this.msg.trim();
+    if (!text) return;
+    if (!this.room) {
+      this.error = 'Bitte zuerst einem Raum beitreten.';
+      return;
+    }
+    if (!this.loggedIn) {
+      this.error = 'Bitte zuerst einloggen.';
+      return;
     }
 
-    // Dual-Cipher
-    const cipherTo   = await this.crypto.encryptFor(this.peerPub, text);
-    const cipherFrom = await this.crypto.encryptFor(this.crypto.me!.pub, text);
-
-    this.socket.emit('chat:send', {
+    const msg: ChatMsg = {
       room: this.room,
       from: this.me,
       to: this.peer,
-      cipherTo,
-      cipherFrom,
-      encrypted: true,
-      ts: Date.now(),
-    });
+      text,
+      ts: Date.now()
+    };
+    console.log('[SEND] ->', msg);
+    this.socket.emit('chat:send', msg);
 
+    // Optimistic UI
+    this.feed.push(msg);
     this.msg = '';
-    this.emitTyping();
   }
 }
