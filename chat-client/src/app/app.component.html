@@ -1,27 +1,91 @@
-<div style="max-width:600px;margin:16px auto;padding:12px;border:1px solid #ddd;border-radius:12px">
-  <h3>Mini-Chat Debug</h3>
+<ion-app>
 
-  <div style="display:flex; gap:8px; margin-bottom:8px;">
-    <label style="flex:1">Ich:
-      <input [(ngModel)]="me" placeholder="alice" style="width:100%">
-    </label>
-    <label style="flex:1">Kontakt:
-      <input [(ngModel)]="peer" placeholder="bob" style="width:100%">
-    </label>
-    <button (click)="join()">Room join</button>
-  </div>
+  <!-- HEADER -->
+  <ion-header class="app-header">
+    <ion-toolbar class="toolbar">
+      <div class="chat-title">
+        <div class="avatar">
+          <span>{{ peer | slice:0:1 | uppercase }}</span>
+          <span class="status-dot" [class.online]="peerOnline"></span>
+        </div>
+        <div class="title-stack">
+          <div class="name">{{ peer || 'Kontakt' }}</div>
+          <div class="sub">
+            <span *ngIf="peerOnline; else offlineTpl">online</span>
+            <ng-template #offlineTpl><span>offline</span></ng-template>
+            <span *ngIf="isTyping" class="typing"> · schreibt…</span>
+          </div>
+        </div>
+      </div>
 
-  <div style="margin:8px 0; font-size:12px; color:#666">Room: {{ room || '—' }}</div>
+      <ion-buttons slot="end">
+        <ion-button fill="clear" size="small">
+          <ion-icon name="ellipsis-horizontal"></ion-icon>
+        </ion-button>
+      </ion-buttons>
+    </ion-toolbar>
+  </ion-header>
 
-  <div style="border:1px solid #eee; padding:8px; height:200px; overflow:auto; margin-bottom:8px;">
-    <div *ngFor="let m of feed">
-      <b>{{ m.from }}:</b> {{ m.text }} <small>({{ m.ts }})</small>
+  <!-- JOIN SCREEN (first run) -->
+  <ion-content *ngIf="!joined" class="join-screen ion-padding">
+    <div class="card">
+      <h2>Neuen Chat starten</h2>
+      <ion-item class="field">
+        <ion-icon name="person" slot="start"></ion-icon>
+        <ion-input [(ngModel)]="me" placeholder="Dein Name"></ion-input>
+      </ion-item>
+      <ion-item class="field">
+        <ion-icon name="chatbubble-ellipses" slot="start"></ion-icon>
+        <ion-input [(ngModel)]="peer" placeholder="Chat mit…"></ion-input>
+      </ion-item>
+      <ion-button expand="block" class="primary" (click)="join()">Beitreten</ion-button>
     </div>
-  </div>
+  </ion-content>
 
-  <div style="display:flex; gap:8px;">
-    <input [(ngModel)]="msg" placeholder="Nachricht…" (keyup.enter)="send()" style="flex:1">
-    <button (click)="send()">Senden</button>
-  </div>
-</div>
+  <!-- CHAT -->
+  <ion-content *ngIf="joined" [fullscreen]="true" class="chat-content">
+    <div class="messages" #messagesPane>
+      <div
+        *ngFor="let m of feed; let i = index"
+        class="bubble"
+        [class.me]="m.from === me"
+        [class.peer]="m.from !== me"
+      >
+        <div class="text">{{ m.text }}</div>
+        <div class="time">{{ m.ts | date:'shortTime' }}</div>
+      </div>
 
+      <div *ngIf="isTyping" class="typing-bubble">
+        <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+      </div>
+    </div>
+  </ion-content>
+
+  <!-- INPUT BAR -->
+  <ion-footer *ngIf="joined" class="input-footer">
+    <ion-toolbar class="input-toolbar">
+      <ion-buttons slot="start">
+        <ion-button fill="clear">
+          <ion-icon name="attach"></ion-icon>
+        </ion-button>
+      </ion-buttons>
+
+      <div class="input-wrap">
+        <ion-input
+          [(ngModel)]="msg"
+          placeholder="Nachricht…"
+          (ionFocus)="onFocus()"
+          (ionBlur)="onBlur()"
+          (ionChange)="emitTyping()"
+          (keyup.enter)="send()"
+        ></ion-input>
+      </div>
+
+      <ion-buttons slot="end">
+        <ion-button class="send" (click)="send()">
+          <ion-icon name="send"></ion-icon>
+        </ion-button>
+      </ion-buttons>
+    </ion-toolbar>
+  </ion-footer>
+</ion-app>
