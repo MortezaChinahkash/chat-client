@@ -22,4 +22,8 @@ export class AppComponent {
     // Optional: fürs schnelle Testen in der Browser-Konsole
     (window as any).socket = this.socket;
   }
+
+  makeRoom(a: string, b: string) {
+    return [a, b].sort().join('|'); // z.B. "alice|bob"
+  }
 }
